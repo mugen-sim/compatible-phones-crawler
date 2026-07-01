@@ -32,13 +32,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+      - name: Restore previously published JSON
+        run: |
+          # Build the default GitHub Pages URL for user/organization pages and project pages.
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          if [ "$REPO_NAME" = "${GITHUB_REPOSITORY_OWNER}.github.io" ]; then
+            PUBLISHED_JSON_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io/devices.json"
+          else
+            PUBLISHED_JSON_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io/${REPO_NAME}/devices.json"
+          fi
+
+          # Keep the last published JSON available as a stale fallback when the source blocks CI.
+          mkdir -p public
+          curl --fail --silent --show-error --location "$PUBLISHED_JSON_URL" --output public/devices.json || true
 
       - name: Crawl smartphone data
-        run: xvfb-run --auto-servernum npm run crawl:devices
+        run: npm run crawl:devices
         env:
-          CRAWLER_HEADLESS: 'false'
+          BROWSERLESS_TOKEN: ${{ secrets.BROWSERLESS_TOKEN }}
+          CRAWLER_ALLOW_STALE_ON_FAILURE: 'true'
+          CRAWLER_BROWSER: browserless
           CRAWLER_NAVIGATION_TIMEOUT_MS: '90000'
           CRAWLER_SECTION_TIMEOUT_MS: '90000'
 
