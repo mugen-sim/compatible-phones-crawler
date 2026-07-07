@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Crawler that publishes smartphone eSIM support data as static JSON.",
+  "description": "Crawler that publishes eSIM device support data as static JSON.",
   "scripts": {
     "crawl:devices": "node scripts/crawl-devices.mjs",
     "crawl:devices:browserless": "CRAWLER_BROWSER=browserless node scripts/crawl-devices.mjs"

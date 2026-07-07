@@ -11,7 +11,7 @@ const projectRoot = path.resolve(__dirname, "..");
 
 loadEnvFile(path.join(projectRoot, ".env"));
 
-const TARGET_URL = "https://saily.com/esim-supported-devices/";
+const TARGET_URL = "https://supportjapantravel.com/en/#faq";
 const OUTPUT_FILE = "public/devices.json";
 const PROFILE_DIR = ".cache/device-crawler-profile-en";
 const BROWSER_LOCALE = "en-US";
@@ -19,7 +19,17 @@ const ACCEPT_LANGUAGE = "en-US,en;q=0.9";
 const BROWSERLESS_BQL_ENDPOINT =
   process.env.BROWSERLESS_BQL_ENDPOINT ??
   "https://production-sfo.browserless.io/stealth/bql";
-const SMARTPHONE_SECTION_HEADINGS = ["Smartphone", "Smartphones"];
+const DEVICE_LIST_HEADING = "List of eSIM-compatible devices";
+const FAMILY_PREFIXES_BY_BRAND = new Map([
+  ["Apple", ["iPhone", "iPad"]],
+  ["Google", ["Pixel"]],
+  ["Microsoft", ["Surface"]],
+  ["Nothing", ["Phone"]],
+  ["Redmi", ["Note"]],
+  ["Samsung", ["Galaxy"]],
+  ["Sharp", ["Aquos"]],
+  ["Sony", ["Xperia"]],
+]);
 const NAVIGATION_TIMEOUT_MS = readIntegerEnv(
   "CRAWLER_NAVIGATION_TIMEOUT_MS",
   60_000,
@@ -43,6 +53,131 @@ const CRAWLER_BROWSER = process.env.CRAWLER_BROWSER ?? "auto";
  */
 function normalizeText(value) {
   return value?.replace(/\s+/g, " ").trim() ?? "";
+}
+
+/**
+ * Escapes text before it is embedded in a regular expression.
+ *
+ * @param {string} value - Literal text that should be matched by a RegExp.
+ * @returns {string} Text with RegExp metacharacters escaped.
+ */
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Checks whether a model entry already starts with the given brand.
+ *
+ * @param {string} modelName - Normalized model name read from the source page.
+ * @param {string} brand - Brand name read from the current heading.
+ * @returns {boolean} True when the model entry starts with the brand.
+ */
+function modelStartsWithBrand(modelName, brand) {
+  const brandPrefixPattern = new RegExp(
+    `^${escapeRegExp(brand)}(?:\\s+|$)`,
+    "i",
+  );
+
+  return brandPrefixPattern.test(modelName);
+}
+
+/**
+ * Removes a leading brand from a model entry when the source already includes it.
+ *
+ * @param {string} modelName - Normalized model name read from the source page.
+ * @param {string} brand - Brand name read from the current heading.
+ * @returns {string} Model name without a duplicated leading brand.
+ */
+function stripLeadingBrand(modelName, brand) {
+  if (!modelStartsWithBrand(modelName, brand)) {
+    return modelName;
+  }
+
+  const brandPrefixPattern = new RegExp(
+    `^${escapeRegExp(brand)}(?:\\s+|$)`,
+    "i",
+  );
+
+  return normalizeText(modelName.replace(brandPrefixPattern, ""));
+}
+
+/**
+ * Splits a source paragraph into individual model entries.
+ *
+ * @param {string} paragraphText - Text from a paragraph below a brand heading.
+ * @returns {string[]} Normalized model entries from the paragraph.
+ */
+function splitModelEntries(paragraphText) {
+  return paragraphText
+    .split(",")
+    .map((entry) => normalizeText(entry))
+    .filter(Boolean);
+}
+
+/**
+ * Finds the family prefix that starts the current model entry.
+ *
+ * @param {string} modelName - Model entry without a duplicated leading brand.
+ * @param {string} brand - Brand name read from the current heading.
+ * @returns {string | null} Matching family prefix, or null when no known prefix matches.
+ */
+function findFamilyPrefix(modelName, brand) {
+  const familyPrefixes = FAMILY_PREFIXES_BY_BRAND.get(brand) ?? [];
+
+  return (
+    familyPrefixes.find((familyPrefix) => {
+      const familyPrefixPattern = new RegExp(
+        `^${escapeRegExp(familyPrefix)}(?:\\s+|$)`,
+        "i",
+      );
+
+      return familyPrefixPattern.test(modelName);
+    }) ?? null
+  );
+}
+
+/**
+ * Expands model entries that omit an obvious family prefix inside the same source paragraph.
+ *
+ * @param {string} brand - Brand name read from the current heading.
+ * @param {string[]} entries - Model entries split from one source paragraph.
+ * @returns {string[]} Model entries with known family prefixes restored.
+ */
+function expandFamilyPrefixes(brand, entries) {
+  let activeFamilyPrefix = null;
+
+  return entries.map((entry) => {
+    const modelName = stripLeadingBrand(entry, brand);
+    const familyPrefix = findFamilyPrefix(modelName, brand);
+
+    if (familyPrefix) {
+      activeFamilyPrefix = familyPrefix;
+      return modelName;
+    }
+
+    // The source often writes "Galaxy A35 5G, A54 5G" or "iPhone 17, 17 Pro";
+    // subsequent comma-separated entries inherit the last explicit family prefix.
+    if (activeFamilyPrefix) {
+      return normalizeText(`${activeFamilyPrefix} ${modelName}`);
+    }
+
+    return modelName;
+  });
+}
+
+/**
+ * Builds the final JSON model value with the brand always present once at the start.
+ *
+ * @param {string} brand - Brand name read from the current heading.
+ * @param {string} modelName - Model name after source cleanup and family expansion.
+ * @returns {string} Full model name written to the output JSON.
+ */
+function buildFullModelName(brand, modelName) {
+  const modelWithoutBrand = stripLeadingBrand(modelName, brand);
+
+  return normalizeText(
+    modelWithoutBrand ? `${brand} ${modelWithoutBrand}` : brand,
+  );
 }
 
 /**
@@ -193,29 +328,29 @@ function getBrowserlessUrl() {
 }
 
 /**
- * Waits until the rendered source page exposes the Smartphone section.
+ * Waits until the rendered source page exposes the device list section.
  *
  * @param {import('playwright').Page} page - Playwright page containing the target website.
- * @returns {Promise<void>} Resolves when the Smartphone heading is available.
+ * @returns {Promise<void>} Resolves when the device list heading is available.
  */
-async function waitForSmartphoneSection(page) {
+async function waitForDeviceList(page) {
   try {
     await page.waitForFunction(
-      (expectedHeadings) => {
+      (expectedHeading) => {
         const normalize = (value) => value?.replace(/\s+/g, " ").trim() ?? "";
 
         return Array.from(document.querySelectorAll("h2")).some((heading) => {
-          return expectedHeadings.includes(normalize(heading.textContent));
+          return normalize(heading.textContent).includes(expectedHeading);
         });
       },
-      SMARTPHONE_SECTION_HEADINGS,
+      DEVICE_LIST_HEADING,
       { timeout: SECTION_TIMEOUT_MS },
     );
   } catch (error) {
     const pageDiagnostics = await getPageDiagnostics(page);
 
     throw new Error(
-      `Smartphone section was not found within ${SECTION_TIMEOUT_MS}ms. ` +
+      `Device list section was not found within ${SECTION_TIMEOUT_MS}ms. ` +
         `Current page diagnostics: ${JSON.stringify(pageDiagnostics)}`,
       { cause: error },
     );
@@ -248,107 +383,65 @@ async function getPageDiagnostics(page) {
 }
 
 /**
- * Extracts all smartphone models from the rendered source accordion.
+ * Extracts all supported device models from the Support Japan Travel HTML.
  *
- * @param {import('playwright').Page} page - Playwright page with the loaded target website.
- * @returns {Promise<Array<{ model: string, brand: string }>>} Flat list of supported smartphone models.
+ * @param {string} html - Rendered or static page HTML.
+ * @returns {Array<{ model: string, brand: string }>} Flat list of supported device models.
  */
-async function extractSmartphones(page) {
-  return page.evaluate((expectedHeadings) => {
-    const normalize = (value) => value?.replace(/\s+/g, " ").trim() ?? "";
-    const smartphoneHeading = Array.from(document.querySelectorAll("h2")).find(
-      (heading) => {
-        return expectedHeadings.includes(normalize(heading.textContent));
-      },
-    );
-
-    if (!smartphoneHeading) {
-      throw new Error("Smartphone section heading was not found.");
-    }
-
-    // The active device category is contained by a ".pt-6" wrapper; sibling categories are hidden.
-    const smartphoneSection = smartphoneHeading.closest(".pt-6");
-
-    if (!smartphoneSection) {
-      throw new Error("Smartphone section container was not found.");
-    }
-
-    const devices = [];
-    const accordionItems = Array.from(smartphoneSection.querySelectorAll("li"));
-
-    for (const accordionItem of accordionItems) {
-      const brand = normalize(
-        accordionItem.querySelector(":scope > button h3")?.textContent ??
-          accordionItem.querySelector(":scope > button")?.textContent,
-      );
-
-      if (!brand) {
-        continue;
-      }
-
-      const models = Array.from(
-        accordionItem.querySelectorAll(":scope > section li"),
-      )
-        .map((modelItem) => normalize(modelItem.textContent))
-        .filter(Boolean);
-
-      for (const model of models) {
-        devices.push({ model, brand });
-      }
-    }
-
-    return devices;
-  }, SMARTPHONE_SECTION_HEADINGS);
-}
-
-/**
- * Extracts all smartphone models from rendered HTML returned by Browserless.
- *
- * @param {string} html - Rendered page HTML.
- * @returns {Array<{ model: string, brand: string }>} Flat list of supported smartphone models.
- */
-function extractSmartphonesFromHtml(html) {
+function extractDevicesFromHtml(html) {
   const $ = cheerio.load(html);
-  const smartphoneHeading = $("h2")
+  const deviceListHeading = $("h2")
     .filter((_, heading) => {
-      return SMARTPHONE_SECTION_HEADINGS.includes(
-        normalizeText($(heading).text()),
-      );
+      return normalizeText($(heading).text()).includes(DEVICE_LIST_HEADING);
     })
     .first();
 
-  if (smartphoneHeading.length === 0) {
-    throw new Error("Smartphone section heading was not found in HTML.");
+  if (deviceListHeading.length === 0) {
+    throw new Error("Device list heading was not found in HTML.");
   }
 
-  // The active device category is contained by a ".pt-6" wrapper; sibling categories are hidden.
-  const smartphoneSection = smartphoneHeading.closest(".pt-6");
+  const deviceListGroup = deviceListHeading
+    .nextAll("div.wp-block-group")
+    .first();
 
-  if (smartphoneSection.length === 0) {
-    throw new Error("Smartphone section container was not found in HTML.");
+  if (deviceListGroup.length === 0) {
+    throw new Error("Device list container was not found in HTML.");
   }
 
+  const innerContainer = deviceListGroup
+    .find(".wp-block-group__inner-container")
+    .first();
+  const deviceListContent = innerContainer.length
+    ? innerContainer
+    : deviceListGroup;
   const devices = [];
 
-  smartphoneSection.find("li").each((_, accordionItem) => {
-    const item = $(accordionItem);
-    const button = item.children("button").first();
-    const brand = normalizeText(button.find("h3").first().text() || button.text());
+  deviceListContent.children("h4.wp-block-heading").each((_, brandHeading) => {
+    const brand = normalizeText($(brandHeading).text());
 
     if (!brand) {
       return;
     }
 
-    item
-      .children("section")
-      .find("li")
-      .each((__, modelItem) => {
-        const model = normalizeText($(modelItem).text());
+    let cursor = $(brandHeading).next();
 
-        if (model) {
-          devices.push({ model, brand });
+    while (cursor.length && cursor.prop("tagName")?.toLowerCase() !== "h4") {
+      if (cursor.prop("tagName")?.toLowerCase() === "p") {
+        const paragraphModels = expandFamilyPrefixes(
+          brand,
+          splitModelEntries(cursor.text()),
+        );
+
+        for (const paragraphModel of paragraphModels) {
+          devices.push({
+            model: buildFullModelName(brand, paragraphModel),
+            brand,
+          });
         }
-      });
+      }
+
+      cursor = cursor.next();
+    }
   });
 
   return devices;
@@ -357,14 +450,12 @@ function extractSmartphonesFromHtml(html) {
 /**
  * Fails fast when the extracted data is empty or malformed.
  *
- * @param {Array<{ model: string, brand: string }>} devices - Extracted smartphone device records.
+ * @param {Array<{ model: string, brand: string }>} devices - Extracted device records.
  * @returns {void}
  */
-function validateSmartphones(devices) {
+function validateDevices(devices) {
   if (!Array.isArray(devices) || devices.length === 0) {
-    throw new Error(
-      "No smartphone devices were extracted from the source page.",
-    );
+    throw new Error("No devices were extracted from the source page.");
   }
 
   for (const device of devices) {
@@ -378,7 +469,7 @@ function validateSmartphones(devices) {
  * Writes the generated JSON file, creating its parent directory when needed.
  *
  * @param {string} outputPath - Destination path relative to the project root.
- * @param {Array<{ model: string, brand: string }>} devices - Smartphone device records to serialize.
+ * @param {Array<{ model: string, brand: string }>} devices - Device records to serialize.
  * @returns {Promise<void>}
  */
 async function writeJsonFile(outputPath, devices) {
@@ -405,7 +496,7 @@ async function readExistingJsonFile(outputPath) {
     const fileContent = await readFile(absoluteOutputPath, "utf8");
     const devices = JSON.parse(fileContent);
 
-    validateSmartphones(devices);
+    validateDevices(devices);
 
     return devices;
   } catch {
@@ -481,13 +572,13 @@ async function fetchHtmlWithBrowserless() {
  */
 async function crawlWithBrowserless() {
   const html = await fetchHtmlWithBrowserless();
-  const devices = extractSmartphonesFromHtml(html);
+  const devices = extractDevicesFromHtml(html);
 
-  validateSmartphones(devices);
+  validateDevices(devices);
   await writeJsonFile(OUTPUT_FILE, devices);
 
   console.log(
-    `Wrote ${devices.length} smartphone records to ${OUTPUT_FILE} with Browserless.`,
+    `Wrote ${devices.length} device records to ${OUTPUT_FILE} with Browserless.`,
   );
 }
 
@@ -522,15 +613,15 @@ async function crawlWithLocalPlaywright() {
       waitUntil: "domcontentloaded",
       timeout: NAVIGATION_TIMEOUT_MS,
     });
-    await waitForSmartphoneSection(page);
+    await waitForDeviceList(page);
 
-    const devices = await extractSmartphones(page);
+    const devices = extractDevicesFromHtml(await page.content());
 
-    validateSmartphones(devices);
+    validateDevices(devices);
     await writeJsonFile(OUTPUT_FILE, devices);
 
     console.log(
-      `Wrote ${devices.length} smartphone records to ${OUTPUT_FILE}.`,
+      `Wrote ${devices.length} device records to ${OUTPUT_FILE}.`,
     );
   } finally {
     await context.close();

@@ -1,6 +1,6 @@
-# Smartphone eSIM Device Data
+# eSIM Device Data
 
-This repository crawls the public eSIM-compatible smartphone list from the source website and publishes it as a static JSON file through GitHub Pages.
+This repository crawls the public eSIM-compatible device list from Support Japan Travel at `https://supportjapantravel.com/en/#faq` and publishes it as a static JSON file through GitHub Pages. The generated data can include phones, tablets, and any other compatible devices listed by the source page.
 
 The generated file is:
 

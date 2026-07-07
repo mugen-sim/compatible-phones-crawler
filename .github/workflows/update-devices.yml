@@ -46,7 +46,7 @@ jobs:
           mkdir -p public
           curl --fail --silent --show-error --location "$PUBLISHED_JSON_URL" --output public/devices.json || true
 
-      - name: Crawl smartphone data
+      - name: Crawl device data
         run: npm run crawl:devices
         env:
           BROWSERLESS_TOKEN: ${{ secrets.BROWSERLESS_TOKEN }}
